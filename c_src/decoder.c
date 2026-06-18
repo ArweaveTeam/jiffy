@@ -423,6 +423,17 @@ make_array(ErlNifEnv* env, ERL_NIF_TERM list)
         ? small_buf
         : enif_alloc(count * sizeof(ERL_NIF_TERM));
 
+    if(arr == NULL) {
+        // enif_alloc failed; build the list by consing instead of
+        // dereferencing NULL. The input list is reversed, so consing
+        // each cell restores the original order.
+        ERL_NIF_TERM acc = enif_make_list(env, 0);
+        while(enif_get_list_cell(env, list, &item, &list)) {
+            acc = enif_make_list_cell(env, item, acc);
+        }
+        return acc;
+    }
+
     // Fill array in reverse since list was reversed after parsing
     unsigned int i = count;
     while(enif_get_list_cell(env, list, &item, &list)) {

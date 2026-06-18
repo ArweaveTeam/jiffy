@@ -90,6 +90,17 @@ make_map(ErlNifEnv* env, ERL_NIF_TERM pairs, ERL_NIF_TERM* out)
         ? small_vals
         : (ERL_NIF_TERM*) enif_alloc(count * sizeof(ERL_NIF_TERM));
 
+    // enif_alloc returns NULL under memory pressure; fail cleanly.
+    if(keys == NULL || vals == NULL) {
+        if(keys != NULL && keys != small_keys) {
+            enif_free(keys);
+        }
+        if(vals != NULL && vals != small_vals) {
+            enif_free(vals);
+        }
+        return 0;
+    }
+
     // Go in reverse order so that last write wins. It's just the behavior
     // we had before and we're preserving it here for backward compatibility.
     unsigned int i = count;
@@ -126,6 +137,15 @@ make_map(ErlNifEnv* env, ERL_NIF_TERM pairs, ERL_NIF_TERM* out)
     ht_slot* table = (ht_size <= HT_STACK_SLOTS)
         ? stack_table
         : (ht_slot*) enif_alloc(ht_size * sizeof(ht_slot));
+    if(table == NULL) {
+        if(keys != small_keys) {
+            enif_free(keys);
+        }
+        if(vals != small_vals) {
+            enif_free(vals);
+        }
+        return 0;
+    }
     memset(table, 0, ht_size * sizeof(ht_slot));
     unsigned int mask = ht_size - 1;
     ErlNifUInt64 salt = (ErlNifUInt64) enif_monotonic_time(ERL_NIF_NSEC);
@@ -189,6 +209,11 @@ make_proplist(ErlNifEnv* env, ERL_NIF_TERM pairs, ERL_NIF_TERM* out,
         ? small_arr
         : (ERL_NIF_TERM*) enif_alloc(count * sizeof(ERL_NIF_TERM));
 
+    // enif_alloc returns NULL under memory pressure; fail cleanly.
+    if(arr == NULL) {
+        return 0;
+    }
+
     ht_slot stack_table[HT_STACK_SLOTS];
     ht_slot* table = NULL;
     unsigned int mask = 0;
@@ -199,6 +224,12 @@ make_proplist(ErlNifEnv* env, ERL_NIF_TERM pairs, ERL_NIF_TERM* out,
         table = (ht_size <= HT_STACK_SLOTS)
             ? stack_table
             : (ht_slot*) enif_alloc(ht_size * sizeof(ht_slot));
+        if(table == NULL) {
+            if(arr != small_arr) {
+                enif_free(arr);
+            }
+            return 0;
+        }
         memset(table, 0, ht_size * sizeof(ht_slot));
         mask = ht_size - 1;
         salt = (ErlNifUInt64) enif_monotonic_time(ERL_NIF_NSEC);
