@@ -57,6 +57,11 @@ typedef struct {
     int             copy_strings;
     ERL_NIF_TERM    null_term;
 
+    // Maximum object/array nesting depth. 0 means unlimited. depth tracks
+    // the current open container count and persists across yields.
+    int             max_depth;
+    int             depth;
+
     unsigned char*  p;
     int             i;
     int             len;
@@ -86,6 +91,8 @@ dec_new(ErlNifEnv* env)
     d->dedupe_keys = 0;
     d->copy_strings = 0;
     d->null_term = d->atoms->atom_null;
+    d->max_depth = 0;
+    d->depth = 0;
 
     d->p = NULL;
     d->len = -1;
@@ -185,6 +192,25 @@ dec_pop_assert(Decoder* d, char val)
     char current = dec_pop(d);
     assert(current == val && "popped invalid state.");
     (void)current;
+}
+
+// Called when an object/array is opened. Returns 0 if the configured
+// max_depth would be exceeded, 1 otherwise.
+static inline int
+dec_enter(Decoder* d)
+{
+    d->depth++;
+    if(d->max_depth > 0 && d->depth > d->max_depth) {
+        return 0;
+    }
+    return 1;
+}
+
+// Called when an object/array is closed.
+static inline void
+dec_leave(Decoder* d)
+{
+    d->depth--;
 }
 
 int
@@ -685,6 +711,8 @@ decode_init(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
             d->dedupe_keys = 1;
         } else if(enif_is_identical(val, d->atoms->atom_copy_strings)) {
             d->copy_strings = 1;
+        } else if(get_max_depth(env, val, &(d->max_depth))) {
+            continue;
         } else if(enif_is_identical(val, d->atoms->atom_use_nil)) {
             d->null_term = d->atoms->atom_nil;
         } else if(get_null_term(env, val, &(d->null_term))) {
@@ -837,6 +865,10 @@ decode_iter(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
                         dec_pop_assert(d, st_value);
                         break;
                     case '{':
+                        if(!dec_enter(d)) {
+                            ret = dec_error(d, "max_depth_exceeded");
+                            goto done;
+                        }
                         dec_push(d, st_object);
                         dec_push(d, st_key);
                         objs = enif_make_list_cell(env, curr, objs);
@@ -844,6 +876,10 @@ decode_iter(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
                         d->i++;
                         break;
                     case '[':
+                        if(!dec_enter(d)) {
+                            ret = dec_error(d, "max_depth_exceeded");
+                            goto done;
+                        }
                         dec_push(d, st_array);
                         dec_push(d, st_value);
                         objs = enif_make_list_cell(env, curr, objs);
@@ -861,6 +897,7 @@ decode_iter(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
                             goto done;
                         }
                         dec_pop_assert(d, st_value);
+                        dec_leave(d);
                         val = curr; // curr is []
                         if(!enif_get_list_cell(env, objs, &curr, &objs)) {
                             ret = dec_error(d, "internal_error");
@@ -905,6 +942,7 @@ decode_iter(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
                         dec_pop_assert(d, st_key);
                         dec_pop_assert(d, st_object);
                         dec_pop_assert(d, st_value);
+                        dec_leave(d);
                         val = make_empty_object(env, d->return_maps);
                         if(!enif_get_list_cell(env, objs, &curr, &objs)) {
                             ret = dec_error(d, "internal_error");
@@ -973,6 +1011,7 @@ decode_iter(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
                             goto done;
                         }
                         dec_pop_assert(d, st_value);
+                        dec_leave(d);
                         if(!make_object(env, curr, &val,
                                 d->return_maps, d->dedupe_keys)) {
                             ret = dec_error(d, "internal_object_error");
@@ -997,6 +1036,7 @@ decode_iter(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
                             goto done;
                         }
                         dec_pop_assert(d, st_value);
+                        dec_leave(d);
                         val = make_array(env, curr);
                         if(!enif_get_list_cell(env, objs, &curr, &objs)) {
                             ret = dec_error(d, "internal_error");
